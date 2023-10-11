@@ -1,0 +1,186 @@
+
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <DFRobot_DHT11.h>
+#include <Ds1302.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+
+#define DHT11_PIN 15
+#define IR_SENSOR_PIN 2
+#define MQ135_PIN 4
+#define PIN_ENA 19
+#define PIN_CLK 5
+#define PIN_DAT 18
+#define BUTTON1_PIN 14
+#define BUTTON2_PIN 27
+
+DFRobot_DHT11 dht11;
+Ds1302 rtc(PIN_ENA, PIN_CLK, PIN_DAT);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const char* ssid = "Tec-Contingencia";
+const char* password = "";
+const char* apiEndpoint = "https://special-waddle-w67jwgr97wjh9xw4-5000.app.github.dev/sensor_data";
+
+int currentView = 0;
+
+void setupWifi() {
+    Serial.begin(9600);
+    Serial.print("Connecting to WiFi");
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(100);
+        Serial.print(".");
+    }
+    Serial.print(" Connected: ");
+    Serial.println(WiFi.localIP());
+}
+
+void setup() {
+    Serial.begin(9600);
+    pinMode(IR_SENSOR_PIN, INPUT);
+    pinMode(BUTTON1_PIN, INPUT);
+    pinMode(BUTTON2_PIN, INPUT);
+    lcd.init();
+    lcd.backlight();
+    rtc.init();
+    Ds1302::DateTime dt = {
+        .year = 23,
+        .month = Ds1302::MONTH_OCT,
+        .day = 5,
+        .hour = 9,
+        .minute = 0,
+        .second = 0,
+        .dow = Ds1302::DOW_THU
+    };
+    rtc.setDateTime(&dt);
+    setupWifi();
+}
+
+void sendData(float temperature, float humidity, int mq135Value, int proximity) {
+    Serial.print("Sending data to API: ");
+
+    HTTPClient http;
+    http.begin(apiEndpoint);
+    http.addHeader("Content-Type", "application/json");
+
+    StaticJsonDocument<300> doc;
+
+    doc["temperature"] = temperature;
+    doc["humidity"] = humidity;
+    doc["mq135Value"] = mq135Value;
+    doc["proximity"] = proximity;
+
+    Ds1302::DateTime now;
+    rtc.getDateTime(&now);
+    String datetime = "20" + String(now.year) + "-" + 
+                      ((now.month < 10) ? "0" : "") + String(now.month) + "-" + 
+                      ((now.day < 10) ? "0" : "") + String(now.day) + " " +
+                      ((now.hour < 10) ? "0" : "") + String(now.hour) + ":" + 
+                      ((now.minute < 10) ? "0" : "") + String(now.minute) + ":" + 
+                      ((now.second < 10) ? "0" : "") + String(now.second);
+    doc["date_time"] = datetime;
+
+    String json;
+    serializeJson(doc, json);
+    Serial.println("Sending JSON: " + json);
+
+    int httpResponseCode = http.POST(json);
+    if (httpResponseCode > 0) {
+        Serial.print("HTTP Response code: ");
+        Serial.println(httpResponseCode);
+        String responseString = http.getString();
+        Serial.println("Received response: " + responseString);
+    } else {
+        Serial.print("Error code: ");
+        Serial.println(httpResponseCode);
+    }
+    http.end();
+}
+
+void loop() {
+    dht11.read(DHT11_PIN);
+    float temperature = dht11.temperature;
+    float humidity = dht11.humidity;
+    int mq135Value = analogRead(MQ135_PIN) / 10;
+    int proximity = analogRead(IR_SENSOR_PIN);
+    
+    Serial.print("Temperatura: ");
+    Serial.println(temperature);
+    Serial.print("Humedad: ");
+    Serial.println(humidity);
+    Serial.print("MQ135: ");
+    Serial.println(mq135Value);
+    Serial.print("Proximity: ");
+    Serial.println(proximity);
+
+    sendData(temperature, humidity, mq135Value, proximity);
+
+    int button1State = digitalRead(BUTTON1_PIN);
+    int button2State = digitalRead(BUTTON2_PIN);
+
+    if (button1State == LOW && button2State == HIGH) {
+        currentView = (currentView + 1) % 4;
+        delay(5000);
+    }
+
+    lcd.clear();
+
+    switch (currentView) {
+        case 0: {
+            Ds1302::DateTime now;
+            rtc.getDateTime(&now);
+            lcd.setCursor(0, 0);
+            lcd.print("20");
+            lcd.print(now.year);
+            lcd.print("-");
+            lcd.print(now.month);
+            lcd.print("-");
+            lcd.print(now.day);
+            lcd.setCursor(0, 1);
+            lcd.print(now.hour);
+            lcd.print(":");
+            lcd.print(now.minute);
+            lcd.print(":");
+            lcd.print(now.second);
+            break;
+        }
+        case 1: {
+            lcd.setCursor(0, 0);
+            lcd.print("Temp: ");
+            lcd.print(temperature);
+            lcd.print("C");
+            lcd.setCursor(0, 1);
+            lcd.print("Hum: ");
+            lcd.print(humidity);
+            lcd.print("%");
+            break;
+        }
+        case 2: {
+            lcd.setCursor(0, 0);
+            lcd.print("MQ135: ");
+            lcd.print(mq135Value);
+            lcd.setCursor(0, 1);
+            if (mq135Value < 100) {
+                lcd.print("Aire limpio");
+            } else if (mq135Value < 200) {
+                lcd.print("Niveles normales");
+            } else {
+                lcd.print("Aire contaminado");
+            }
+            break;
+        }
+        case 3: {
+            lcd.setCursor(0, 0);
+            lcd.print("Proximidad: ");
+            lcd.print(proximity);
+            break;
+        }
+    }
+
+    delay(5000);
+}
